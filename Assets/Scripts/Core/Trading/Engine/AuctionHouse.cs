@@ -1,48 +1,110 @@
 using System.Collections.Generic;
 using UnityEngine;
-using Glade.Core.Tick;
 using Glade.Core.Trading.Data;
 using Glade.Core.Trading.Interfaces;
+using Glade.Core.Tick;
 
 namespace Glade.Core.Trading.Engine
 {
-    /// <summary>Collects orders from registered traders and settles them each tick.</summary>
+    /// <summary>
+    /// Global market that collects buy/sell orders from all traders each tick and matches them.
+    /// Uses a simple auction mechanism to clear trades.
+    /// </summary>
     public class AuctionHouse : MonoBehaviour, ITickable
     {
-        private readonly Dictionary<(Resource,Resource), OrderBook> _books = new();
-        private readonly List<ITradingEntity> _traders = new();
+        // Order books keyed by (item, currency) pair
+        private readonly Dictionary<(Resource, Resource), OrderBook> books = new();
+        private readonly List<ITradingEntity> traders = new();
 
-        public void RegisterTrader(ITradingEntity t) => _traders.Add(t);
-        public void UnregisterTrader(ITradingEntity t) => _traders.Remove(t);
+        public void RegisterTrader(ITradingEntity trader) => traders.Add(trader);
+        public void UnregisterTrader(ITradingEntity trader) => traders.Remove(trader);
 
+        /// <summary>Called each tick to gather all orders and execute matches.</summary>
         public void Tick(float dt)
         {
-            _books.Clear();
-
-            // Gather orders ---------------------------------------------------
-            foreach (var t in _traders)
+            books.Clear();
+            // 1. Collect all orders from traders
+            foreach (var trader in traders)
             {
-                foreach (var o in t.GetSellOrders()) GetBook(o).AddAsk(o);
-                foreach (var o in t.GetBuyOrders())  GetBook(o).AddBid(o);
+                foreach (Order sellOrder in trader.GetSellOrders()) AddAsk(sellOrder);
+                foreach (Order buyOrder  in trader.GetBuyOrders())  AddBid(buyOrder);
             }
-
-            // Settle each book -----------------------------------------------
-            foreach (var book in _books.Values)
+            // 2. Match orders in each book
+            foreach (OrderBook book in books.Values)
             {
-                foreach (var tr in book.Clear())
+                foreach (TradeResult trade in book.ClearTrades())
                 {
-                    tr.ask.trader.OnTradeExecuted(tr);
-                    tr.bid.trader.OnTradeExecuted(tr);
+                    // Notify traders of executed trade
+                    trade.ask.trader.OnTradeExecuted(trade);
+                    trade.bid.trader.OnTradeExecuted(trade);
                 }
             }
         }
 
-        private OrderBook GetBook(Order o)
+        private void AddAsk(Order order)
         {
-            var key = (o.item, o.currency);
-            if (!_books.TryGetValue(key, out var book))
-                _books[key] = book = new OrderBook();
-            return book;
+            var key = (order.item, order.currency);
+            if (!books.TryGetValue(key, out var book))
+            {
+                book = new OrderBook();
+                books[key] = book;
+            }
+            book.AddAsk(order);
+        }
+
+        private void AddBid(Order order)
+        {
+            var key = (order.item, order.currency);
+            if (!books.TryGetValue(key, out var book))
+            {
+                book = new OrderBook();
+                books[key] = book;
+            }
+            book.AddBid(order);
+        }
+
+        /// <summary>
+        /// Simple order book collecting asks and bids and matching them.
+        /// (For brevity, matching is simplified: it matches all possible trades at ask price.)
+        /// </summary>
+        private class OrderBook
+        {
+            private readonly List<Order> asks = new();
+            private readonly List<Order> bids = new();
+            public void AddAsk(Order ask) => asks.Add(ask);
+            public void AddBid(Order bid) => bids.Add(bid);
+            public IEnumerable<TradeResult> ClearTrades()
+            {
+                // Sort asks by price ascending and bids by price descending for matching
+                asks.Sort((a, b) => a.unitPrice.CompareTo(b.unitPrice));
+                bids.Sort((a, b) => b.unitPrice.CompareTo(a.unitPrice));
+                var results = new List<TradeResult>();
+                int i = 0, j = 0;
+                while (i < asks.Count && j < bids.Count)
+                {
+                    Order ask = asks[i];
+                    Order bid = bids[j];
+                    if (ask.unitPrice <= bid.unitPrice)
+                    {
+                        // Trade occurs at ask.unitPrice
+                        int tradedQty = Mathf.Min(-ask.quantity, bid.quantity);
+                        // Adjust quantities
+                        ask.quantity += tradedQty;    // ask.quantity is negative (selling)
+                        bid.quantity -= tradedQty;
+                        // Record trade result
+                        results.Add(new TradeResult(ask, bid, tradedQty));
+                        // Remove fulfilled orders
+                        if (ask.quantity == 0) i++;
+                        if (bid.quantity == 0) j++;
+                    }
+                    else
+                    {
+                        // Highest bid is lower than lowest ask, no further matches
+                        break;
+                    }
+                }
+                return results;
+            }
         }
     }
 }
