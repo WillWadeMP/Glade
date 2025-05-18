@@ -4,30 +4,31 @@ using UnityEngine;
 namespace Glade.Core.Tick
 {
     /// <summary>
-    /// Central heartbeat; broadcasts one tick every <see cref="tickInterval"/> seconds.
+    /// Central heartbeat that emits ticks at a fixed real-time interval.
+    /// Each tick represents one in-game minute by default.
     /// </summary>
     public class TickManager : MonoBehaviour
     {
-        [Tooltip("Seconds of real time per simulation tick")]
-        [SerializeField] private float tickInterval = 1f;
+        [Tooltip("Seconds of real time per simulation tick (in-game minute)")]
+        [SerializeField] private float tickInterval = 1f;  // 1 second real = 1 game minute
 
-        private readonly List<ITickable> _subscribers = new();
-        private float _timer;
+        private readonly List<ITickable> subscribers = new();
+        private float timer;
 
-        public void Register(ITickable t) => _subscribers.Add(t);
-        public void Unregister(ITickable t) => _subscribers.Remove(t);
+        public void Register(ITickable tickable) => subscribers.Add(tickable);
+        public void Unregister(ITickable tickable) => subscribers.Remove(tickable);
 
         private void Update()
         {
-            _timer += Time.deltaTime;
-            if (_timer < tickInterval) return;
-
-            _timer = 0f;
-            float dt = tickInterval;
-
-            // Note: no try/catch – let the crash surface during dev.
-            foreach (var sub in _subscribers)
+            timer += Time.deltaTime;
+            if (timer < tickInterval) return;
+            timer = 0f;
+            float dt = 1f;  // 1 game minute per tick
+            // Broadcast tick to all subscribers in order of registration
+            foreach (var sub in subscribers)
+            {
                 sub.Tick(dt);
+            }
         }
     }
 }

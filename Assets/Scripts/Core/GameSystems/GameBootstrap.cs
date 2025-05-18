@@ -2,50 +2,79 @@ using System.Linq;
 using UnityEngine;
 using Glade.Core.Tick;
 using Glade.Core.Trading.Engine;
-using Glade.Core.Trading.Interfaces;
 using Glade.Core.Population;
 using Glade.Core.World;
 using Glade.Core.Buildings;
 using Glade.Core.Trading.Data;
+using Glade.Core.Modding;
+using Glade.Core.Trading.Interfaces;
 
 namespace Glade.Core.GameSystems
 {
     /// <summary>
-    /// One-stop initialiser: wires managers together and seeds registries.
-    /// Place this on an empty GameObject in your starting scene.
+    /// Initializes core systems at game start: loads data, registers entities, and ensures managers are wired up.
     /// </summary>
     public class GameBootstrap : MonoBehaviour
     {
-        [Header("Scene-level singletons")]
-        [SerializeField] private TickManager      tickManager;
-        [SerializeField] private AuctionHouse     auctionHouse;
+        [Header("Scene References")]
+        [SerializeField] private TickManager tickManager;
+        [SerializeField] private TimeManager timeManager;
+        [SerializeField] private WorldGrid worldGrid;
+        [SerializeField] private AuctionHouse auctionHouse;
         [SerializeField] private PopulationManager populationManager;
-        [SerializeField] private WorldGrid        worldGrid;
-
-        [Header("Initial currency resource (drag asset)")]
+        [SerializeField] private ModManager modManager;
+        [Tooltip("Default currency resource for the simulation (assign a Resource asset, e.g. 'coin')")]
         [SerializeField] private Resource defaultCurrency;
 
-        void Awake()
+        private void Awake()
         {
-            // Load core data -------------------------------------------------
+            // 1. Load core data from Resources
             ResourceRegistry.LoadFromResourcesFolder();
-            CurrencyManager.SetDefault(defaultCurrency);
+            BuildingLevelRegistry.LoadFromResourcesFolder();
+            PopulationRegistry.LoadFromResourcesFolder();
+            // Set default currency for trading system
+            if (defaultCurrency != null)
+            {
+                CurrencyManager.SetDefault(defaultCurrency);
+            }
+            else
+            {
+                // If not assigned, default to first loaded currency resource
+                var currency = ResourceRegistry.All.FirstOrDefault(r => r.isCurrency);
+                if (currency != null)
+                    CurrencyManager.SetDefault(currency);
+            }
 
-            // Register traders & citizens -----------------------------------
-            foreach (var t in FindObjectsOfType<MonoBehaviour>(true).OfType<ITradingEntity>())
-                auctionHouse.RegisterTrader(t);
-
-            foreach (var c in FindObjectsOfType<Citizen>(true))
-                populationManager.Register(c);
-
-            // Mark buildings on grid ---------------------------------------
-            foreach (var b in FindObjectsOfType<Building>(true))
+            // 2. Initialize world grid occupancy for any pre-placed buildings
+            foreach (Building b in FindObjectsOfType<Building>())
+            {
                 worldGrid.Occupy(b);
+            }
 
-            // Hook managers into TickManager -------------------------------
+            // 3. Register trading entities (traders) with AuctionHouse
+            foreach (var trader in FindObjectsOfType<MonoBehaviour>().OfType<ITradingEntity>())
+            {
+                auctionHouse.RegisterTrader(trader);
+            }
+
+            // 4. Register citizens with PopulationManager
+            foreach (Citizen c in FindObjectsOfType<Citizen>())
+            {
+                populationManager.Register(c);
+            }
+
+            // 5. Hook up managers to TickManager for updates
+            tickManager.Register(timeManager);
             tickManager.Register(auctionHouse);
             tickManager.Register(populationManager);
-            tickManager.Register(worldGrid.GetComponent<ITickable>()); // if any
+            // (Buildings and Citizens register themselves in Awake; WorldGrid has no per-tick update)
+
+            // 6. Load mods (if any)
+            if (modManager != null)
+            {
+                modManager.LoadMods();
+                // After loading mod assets, you may want to instantiate or integrate new content as needed.
+            }
         }
     }
 }
